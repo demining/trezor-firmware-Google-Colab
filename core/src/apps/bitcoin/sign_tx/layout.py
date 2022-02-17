@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 from ubinascii import hexlify
 
 from trezor import ui, utils, wire
+from trezor.crypto.bolt11 import bolt11_decode
 from trezor.enums import AmountUnit, ButtonRequestType, OutputScriptType
 from trezor.strings import format_amount, format_timestamp
 from trezor.ui import layouts
@@ -64,6 +65,21 @@ async def confirm_output(
                 data=data,
                 br_code=ButtonRequestType.ConfirmOutput,
             )
+    elif output.script_type == OutputScriptType.PAYTOLNSWAP:
+        assert output.lnswap is not None
+        title = "Confirm Lightning Swap"
+        icon = ui.ICON_SEND
+        bolt11 = bolt11_decode(output.lnswap.invoice)
+        payee = hexlify(bolt11["payee"]).decode()
+        amount = bolt11["amount"]
+        desc = bolt11["description"]
+        layout = layouts.confirm_output(
+            ctx,
+            f"{output.address}\nPayee: {payee}\nAmount: {amount} msat\nDesc: {desc}",
+            format_coin_amount(output.amount, coin, amount_unit),
+            title=title,
+            icon=icon,
+        )
     else:
         assert output.address is not None
         address_short = addresses.address_short(coin, output.address)

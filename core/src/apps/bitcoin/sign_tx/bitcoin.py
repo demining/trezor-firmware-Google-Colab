@@ -2,7 +2,9 @@ from micropython import const
 from typing import TYPE_CHECKING
 
 from trezor import wire
+from trezor.crypto.bolt11 import bolt11_decode
 from trezor.crypto.hashlib import sha256
+from trezor.crypto.scripts import sha256_ripemd160
 from trezor.enums import InputScriptType, OutputScriptType
 from trezor.messages import TxRequest, TxRequestDetailsType, TxRequestSerializedType
 from trezor.utils import HashWriter, empty_bytearray, ensure
@@ -17,6 +19,7 @@ from ..common import (
     input_is_external,
     input_is_segwit,
 )
+from ..keychain import validate_path_against_script_type
 from ..ownership import verify_nonownership
 from ..verification import SignatureVerifier
 from . import approvers, helpers, progress
@@ -857,6 +860,48 @@ class Bitcoin:
         if txo.script_type == OutputScriptType.PAYTOOPRETURN:
             assert txo.op_return_data is not None  # checked in sanitize_tx_output
             return scripts.output_script_paytoopreturn(txo.op_return_data)
+
+        if txo.script_type == OutputScriptType.PAYTOLNSWAP:
+            assert txo.lnswap is not None  # checked in sanitize_tx_output
+            if txo.lnswap.swap_script_type not in [
+                InputScriptType.SPENDP2SHWITNESS,
+                InputScriptType.SPENDWITNESS,
+            ]:
+                raise wire.DataError("Invalid swap script type")
+            if txo.lnswap.refund_script_type not in [
+                InputScriptType.SPENDADDRESS,
+                InputScriptType.SPENDWITNESS,
+            ]:
+                raise wire.DataError("Invalid refund script type")
+            if not validate_path_against_script_type(
+                self.coin,
+                address_n=txo.lnswap.refund_address_n,
+                script_type=txo.lnswap.refund_script_type,
+            ):
+                raise wire.DataError("Invalid refund path")
+            bolt11 = bolt11_decode(txo.lnswap.invoice)
+            if bolt11["network"] != self.coin.bech32_prefix:
+                raise wire.DataError("Invalid invoice network")
+            refund_node = self.keychain.derive(txo.lnswap.refund_address_n)
+            redeem_script = scripts.redeem_script_paytolnswap(
+                bolt11["payment_hash"],
+                txo.lnswap.destination,
+                txo.lnswap.cltv,
+                refund_node.public_key(),
+            )
+            redeem_script_hash = sha256(redeem_script).digest()
+            s = scripts.output_script_native_segwit(0, redeem_script_hash)
+            if txo.lnswap.swap_script_type == InputScriptType.SPENDWITNESS:
+                assert self.coin.bech32_prefix is not None
+                txo.address = addresses.address_p2wsh(
+                    redeem_script_hash, self.coin.bech32_prefix
+                )
+                return s
+            else:  # InputScriptType.SPENDP2SHWITNESS
+                # wrap p2wsh into p2sh if requested
+                scripthash = sha256_ripemd160(s).digest()
+                txo.address = addresses.address_p2sh(scripthash, self.coin)
+                return scripts.output_script_p2sh(scripthash)
 
         if txo.address_n:
             # change output

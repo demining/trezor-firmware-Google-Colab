@@ -470,6 +470,12 @@ def sanitize_tx_output(txo: TxOutput, coin: CoinInfo) -> TxOutput:
     if txo.script_type == OutputScriptType.PAYTOTAPROOT and not coin.taproot:
         raise wire.DataError("Taproot not enabled on this coin")
 
+    if txo.script_type == OutputScriptType.PAYTOLNSWAP:
+        if txo.lnswap is None:
+            raise wire.DataError("Lightning Swap output without lnswap")
+        if not txo.lnswap.refund_address_n:
+            raise wire.DataError("Missing refund_address_n")
+
     if txo.script_type == OutputScriptType.PAYTOOPRETURN:
         # op_return output
         if txo.op_return_data is None:
@@ -485,8 +491,9 @@ def sanitize_tx_output(txo: TxOutput, coin: CoinInfo) -> TxOutput:
             )
         if txo.address_n and txo.address:
             raise wire.DataError("Both address and address_n provided.")
-        if not txo.address_n and not txo.address:
-            raise wire.DataError("Missing address")
+        if txo.script_type != OutputScriptType.PAYTOLNSWAP:
+            if not txo.address_n and not txo.address:
+                raise wire.DataError("Missing address")
 
     if txo.orig_hash and txo.orig_index is None:
         raise wire.DataError("Missing orig_index field.")
